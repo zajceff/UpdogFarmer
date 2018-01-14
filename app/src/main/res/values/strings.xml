@@ -9,9 +9,9 @@
     <string name="steamguard">Steam Guard code</string>
     <string name="login">Login</string>
     <string name="start_idling">Start farming</string>
-    <string name="desc_start">Idles your games until all trading cards have dropped.</string>
-    <string name="stop_idling">Stop service</string>
-    <string name="desc_stop">Stops the Steam service and closes the app.</string>
+    <string name="desc_start">Idle your games until all trading cards have dropped.</string>
+    <string name="stop_idling">Stop Service</string>
+    <string name="desc_stop">Stop the Steam service and quit the app.</string>
     <string name="idling_finished">No games left to idle.</string>
     <string name="search">Search</string>
     <string name="settings">Settings</string>
@@ -19,20 +19,22 @@
     <string name="redeem">Activate Product</string>
     <string name="redeem_msg">Enter a product code or free game ID</string>
     <string name="ok">OK</string>
-    <string name="cat_idle">Farming</string>
+    <string name="cat_idle">Card Farming</string>
     <string name="cat_general">General</string>
     <string name="pref_offline">Offline Farming</string>
     <string name="sum_offline">Sets your status as \'Offline\' so your friends won\'t see you idling.</string>
     <string name="pref_stay_awake">Keep Device Awake</string>
-    <string name="sum_stay_awake">Enable this if your device doesn\'t keep WiFi on during sleep.</string>
-    <string name="pref_simple">Simple Farming</string>
-    <string name="sum_simple">Idles your games one-by-one until all cards have dropped, doesn\'t try to bring them up to 2 hrs first. If unsure, leave this disabled.</string>
-    <string name="pref_minimize_data">Minimize data usage</string>
-    <string name="sum_minimize_data">Disable downloading any images.</string>
+    <string name="sum_stay_awake">Enable this if Idle Daddy stops working when the screen is off. WARNING: Some devices may automatically kill the app after a short period if this option is enabled.</string>
+    <string name="pref_minimize_data">Minimize Data Usage</string>
+    <string name="sum_minimize_data">Disable downloading images.</string>
     <string name="pref_parental_pin">Parental PIN</string>
     <string name="sum_parental_pin">Enter your parental PIN to unlock Family View.</string>
     <string name="pref_blacklist">Blacklist</string>
     <string name="sum_blacklist">Blacklist games you don\'t want to farm.</string>
+    <string name="pref_hours_until">Hours Until Card Drops</string>
+    <string name="sum_hours_until">The number of hours it takes for games to start dropping cards. While farming, Idle Daddy will idle multiple games simultaneously until they reach this number. For most users, 3 hours is the best choice here.</string>
+    <string name="pref_include_free_games">Include Played Free Games</string>
+    <string name="sum_include_free_games">By default, free games like Team Fortress 2 are excluded (as technically everyone owns them). If this option is enabled, they will be listed if the player has played them at some point.</string>
     <string name="blacklist_hint">Enter an appid and click +</string>
     <string name="add_to_blacklist">Add game to blacklist</string>
     <string name="added_to_blacklist">Game added to blacklist</string>
@@ -42,7 +44,7 @@
     <string name="close_drawer">Close drawer</string>
     <string name="home">Home</string>
     <string name="games">Games</string>
-    <string name="no_games_found">Couldn\'t retrieve the list of games. Make sure your profile is set to public.</string>
+    <string name="no_games_found">Couldn\'t retrieve the list of games.</string>
     <string name="now_playing">Now playing</string>
     <string name="error_not_logged_in">You must be logged in to Steam</string>
     <string name="invalid_password">Invalid password</string>
@@ -62,6 +64,10 @@
         <item quantity="one">%d card drop remaining</item>
         <item quantity="other">%d card drops remaining</item>
     </plurals>
+    <plurals name="hours_on_record">
+        <item quantity="one">%.1f hr on record</item>
+        <item quantity="other">%.1f hrs on record</item>
+    </plurals>
     <string name="logged_in_elsewhere">Steam in use. Will resume when possible.</string>
     <string name="web_login_failed">Failed to log in to Steam website!</string>
     <string name="login_key_expired">Login key expired!</string>
@@ -77,4 +83,21 @@
     <string name="activated">Activated: %s</string>
     <string name="refresh">Refresh</string>
     <string name="last_session">Last Session</string>
+    <string name="play_all">Play all</string>
+    <string name="remove_ads">Remove ads</string>
+    <string name="logcat">Send log</string>
+    <string name="sort">Sort</string>
+    <string name="sort_alphabetically">Alphabetically</string>
+    <string name="sort_hours_played">Hours Played</string>
+    <string name="auto_discovery_title">Auto Discovery Queue</string>
+    <string name="auto_discovery">This will automatically view the games in your Discovery Queue. During the Summer and Winter sales, you can get up to 3 trading cards per day by viewing your queue.</string>
+    <string name="generating_discovery">Generating new Discovery Queue…</string>
+    <string name="discovering">Discovering %s (%d/%d)</string>
+    <string name="discovery_finished">Discovery Queue Finished</string>
+    <string name="discovery_error">Could not complete the Discovery Queue at this time. Try again later</string>
+    <string name="auto_vote">Auto Vote (Steam Awards)</string>
+    <string name="vote_successful">Vote successful!</string>
+    <string name="vote_failed">Vote failed!</string>
+    <string name="apikey_access_denied">Steam API key access denied, using a built-in key.</string>
+    <string name="apikey_register_failed">Failed to register an API key, using a built-in key.</string>
 </resources>

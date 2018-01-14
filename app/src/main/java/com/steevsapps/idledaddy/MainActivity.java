@@ -1,74 +1,81 @@
 package com.steevsapps.idledaddy;
 
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.design.widget.NavigationView;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.app.FragmentTransaction;
-import android.support.v4.content.ContextCompat;
+import android.support.v4.content.FileProvider;
 import android.support.v4.content.LocalBroadcastManager;
 import android.support.v4.widget.DrawerLayout;
 import android.support.v7.app.ActionBarDrawerToggle;
-import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.SearchView;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.view.ViewStub;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.android.billingclient.api.Purchase;
 import com.bumptech.glide.Glide;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.AdView;
+import com.google.android.gms.ads.MobileAds;
+import com.steevsapps.idledaddy.base.BaseActivity;
+import com.steevsapps.idledaddy.billing.BillingManager;
+import com.steevsapps.idledaddy.billing.BillingUpdatesListener;
 import com.steevsapps.idledaddy.dialogs.AboutDialog;
+import com.steevsapps.idledaddy.dialogs.AutoDiscoverDialog;
 import com.steevsapps.idledaddy.dialogs.GameOptionsDialog;
 import com.steevsapps.idledaddy.dialogs.RedeemDialog;
-import com.steevsapps.idledaddy.fragments.DataFragment;
 import com.steevsapps.idledaddy.fragments.GamesFragment;
 import com.steevsapps.idledaddy.fragments.HomeFragment;
 import com.steevsapps.idledaddy.fragments.SettingsFragment;
 import com.steevsapps.idledaddy.listeners.DialogListener;
-import com.steevsapps.idledaddy.listeners.FetchGamesListener;
 import com.steevsapps.idledaddy.listeners.GamePickedListener;
 import com.steevsapps.idledaddy.listeners.SpinnerInteractionListener;
+import com.steevsapps.idledaddy.preferences.PrefsManager;
 import com.steevsapps.idledaddy.steam.SteamService;
 import com.steevsapps.idledaddy.steam.wrapper.Game;
-import com.steevsapps.idledaddy.utils.Prefs;
+import com.steevsapps.idledaddy.utils.Utils;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 
 import uk.co.thomasc.steamkit.base.generated.steamlanguage.EPersonaState;
-import uk.co.thomasc.steamkit.base.generated.steamlanguage.EResult;
 
 
-public class MainActivity extends AppCompatActivity
-        implements DialogListener, GamePickedListener, FetchGamesListener, SharedPreferences.OnSharedPreferenceChangeListener {
+public class MainActivity extends BaseActivity implements BillingUpdatesListener, DialogListener,
+        GamePickedListener, SharedPreferences.OnSharedPreferenceChangeListener {
     private final static String TAG = MainActivity.class.getSimpleName();
     private final static String DRAWER_ITEM = "DRAWER_ITEM";
     private final static String TITLE = "TITLE";
     private final static String LOGOUT_EXPANDED = "LOGOUT_EXPANDED";
 
-    private String title;
-
+    private String title = "";
     private boolean loggedIn = false;
     private boolean farming = false;
 
     // Views
+    private LinearLayout mainContainer;
     private ImageView avatarView;
     private TextView usernameView;
     private DrawerLayout drawerLayout;
@@ -76,85 +83,44 @@ public class MainActivity extends AppCompatActivity
     private ActionBarDrawerToggle drawerToggle;
     private ImageView logoutToggle;
     private Spinner spinnerNav;
+    private SearchView searchView;
+    private ViewStub adInflater;
+    private AdView adView;
+
+    private BillingManager billingManager;
 
     private boolean logoutExpanded = false;
     private int drawerItemId;
 
     private SharedPreferences prefs;
-
-    // Service connection
-    private boolean isBound;
     private SteamService steamService;
-    private ServiceConnection connection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName componentName, IBinder service) {
-            Log.i(TAG, "Service connected");
-            steamService = ((SteamService.LocalBinder) service).getService();
-            loggedIn = steamService.isLoggedIn();
-            farming = steamService.isFarming();
-            updateStatus();
-            updateDrawerHeader(null);
-            if (farming) {
-                showDropInfo();
-            }
-
-            // Check if a Steam key was sent to us from another app
-            final Intent intent = getIntent();
-            if (Intent.ACTION_SEND.equals(intent.getAction())) {
-                handleKeyIntent(intent);
-            }
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName componentName) {
-            steamService = null;
-        }
-    };
 
     private BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            loggedIn = steamService.isLoggedIn();
             farming = steamService.isFarming();
-            if (intent.getAction().equals(SteamService.LOGIN_EVENT)) {
-                final EResult result = (EResult) intent.getSerializableExtra(SteamService.RESULT);
-                loggedIn = result == EResult.OK;
-                updateStatus();
-            } else if (intent.getAction().equals(SteamService.DISCONNECT_EVENT)) {
-                loggedIn = false;
-                updateStatus();
-            } else if (intent.getAction().equals(SteamService.STOP_EVENT)) {
-                loggedIn = steamService.isLoggedIn();
-                updateStatus();
-            } else if (intent.getAction().equals(SteamService.FARM_EVENT)) {
-                showDropInfo();
-            } else if (intent.getAction().equals(SteamService.PERSONA_EVENT)) {
-                updateDrawerHeader(intent);
+            switch (intent.getAction()) {
+                case SteamService.LOGIN_EVENT:
+                case SteamService.DISCONNECT_EVENT:
+                case SteamService.STOP_EVENT:
+                    updateStatus();
+                    break;
+                case SteamService.FARM_EVENT:
+                    showDropInfo(intent);
+                    break;
+                case SteamService.PERSONA_EVENT:
+                    updateDrawerHeader(intent);
+                    break;
+                case SteamService.NOW_PLAYING_EVENT:
+                    showNowPlaying();
+                    break;
             }
         }
     };
 
-    private void doBindService() {
-        if (!isBound) {
-            Log.i(TAG, "binding service");
-            bindService(new Intent(MainActivity.this, SteamService.class),
-                    connection, Context.BIND_AUTO_CREATE);
-            isBound = true;
-        }
-    }
-
-    private void doUnbindService() {
-        if (isBound) {
-            Log.i(TAG, "unbinding service");
-            // Detach our existing connection
-            unbindService(connection);
-            isBound = false;
-        }
-    }
-
     private void doLogout() {
-        if (steamService != null) {
-            steamService.logoff();
-        }
+        steamService.logoff();
         closeDrawer();
         avatarView.setImageResource(R.color.transparent);
         usernameView.setText("");
@@ -173,25 +139,42 @@ public class MainActivity extends AppCompatActivity
         final String personaName;
         final String avatarHash;
 
-        if (intent == null) {
-            // Restore from service
-            personaName = steamService.getPersonaName();
-            avatarHash = steamService.getAvatarHash();
-        } else {
+        if (intent != null) {
             personaName = intent.getStringExtra(SteamService.PERSONA_NAME);
             avatarHash = intent.getStringExtra(SteamService.AVATAR_HASH);
+            PrefsManager.writePersonaName(personaName);
+            PrefsManager.writeAvatarHash(avatarHash);
+        } else {
+            personaName = PrefsManager.getPersonaName();
+            avatarHash = PrefsManager.getAvatarHash();
         }
 
         if (!personaName.isEmpty()) {
             usernameView.setText(personaName);
         }
 
-        if (!Prefs.minimizeData() && !avatarHash.isEmpty() && !avatarHash.equals("0000000000000000000000000000000000000000")) {
+        if (!PrefsManager.minimizeData() && !avatarHash.isEmpty() && !avatarHash.equals("0000000000000000000000000000000000000000")) {
             final String avatar = String.format(Locale.US,
                     "http://cdn.akamai.steamstatic.com/steamcommunity/public/images/avatars/%s/%s_full.jpg",
                     avatarHash.substring(0, 2),
                     avatarHash);
             Glide.with(this).load(avatar).into(avatarView);
+        }
+    }
+
+    @Override
+    protected void onServiceConnected() {
+        Log.i(TAG, "Service connected");
+        steamService = getService();
+        loggedIn = steamService.isLoggedIn();
+        farming = steamService.isFarming();
+        updateStatus();
+        updateDrawerHeader(null);
+
+        // Check if a Steam key was sent to us from another app
+        final Intent intent = getIntent();
+        if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            handleKeyIntent(intent);
         }
     }
 
@@ -202,6 +185,11 @@ public class MainActivity extends AppCompatActivity
 
         final Toolbar toolbar = findViewById(R.id.toolbar);
         setSupportActionBar(toolbar);
+
+        mainContainer = findViewById(R.id.main_container);
+
+        // Setup Billing Manager
+        billingManager = new BillingManager(this);
 
         // Setup the navigation spinner (Games fragment only)
         spinnerNav = findViewById(R.id.spinner_nav);
@@ -247,6 +235,10 @@ public class MainActivity extends AppCompatActivity
                         AboutDialog.newInstance().show(getSupportFragmentManager(), AboutDialog.TAG);
                         closeDrawer();
                         break;
+                    case R.id.remove_ads:
+                        billingManager.launchPurchaseFlow();
+                        closeDrawer();
+                        break;
                     default:
                         // Go to page
                         selectItem(item.getItemId(), true);
@@ -280,6 +272,9 @@ public class MainActivity extends AppCompatActivity
                 updateStatus();
             }
         });
+
+        // Ads
+        adInflater = findViewById(R.id.ad_inflater);
 
         if (savedInstanceState != null) {
             drawerItemId = savedInstanceState.getInt(DRAWER_ITEM);
@@ -323,9 +318,9 @@ public class MainActivity extends AppCompatActivity
      * Activate a Steam key sent from another app
      */
     private void handleKeyIntent(Intent intent) {
-        final String key = intent.getStringExtra(Intent.EXTRA_TEXT).trim();
-        if (loggedIn) {
-            steamService.redeemKey(key);
+        final String key = intent.getStringExtra(Intent.EXTRA_TEXT);
+        if (loggedIn && key != null) {
+            steamService.redeemKey(key.trim());
         } else {
             Toast.makeText(getApplicationContext(), R.string.error_not_logged_in, Toast.LENGTH_LONG).show();
         }
@@ -337,14 +332,6 @@ public class MainActivity extends AppCompatActivity
             // Already selected
             closeDrawer();
             return;
-        }
-
-        // Cleanup retained data fragment when switching screens
-        final DataFragment dataFragment = (DataFragment) getSupportFragmentManager().findFragmentByTag("data");
-        if (dataFragment != null) {
-            getSupportFragmentManager().beginTransaction()
-                    .remove(dataFragment)
-                    .commit();
         }
 
         Fragment fragment;
@@ -397,7 +384,7 @@ public class MainActivity extends AppCompatActivity
     }
 
     private void applySettings() {
-        if (Prefs.stayAwake()) {
+        if (PrefsManager.stayAwake()) {
             // Don't let the screen turn off
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         } else {
@@ -426,10 +413,10 @@ public class MainActivity extends AppCompatActivity
         filter.addAction(SteamService.STOP_EVENT);
         filter.addAction(SteamService.FARM_EVENT);
         filter.addAction(SteamService.PERSONA_EVENT);
+        filter.addAction(SteamService.NOW_PLAYING_EVENT);
         LocalBroadcastManager.getInstance(this).registerReceiver(receiver, filter);
-        startSteam();
         // Listen for preference changes
-        prefs = Prefs.getPrefs();
+        prefs = PrefsManager.getPrefs();
         prefs.registerOnSharedPreferenceChangeListener(this);
     }
 
@@ -437,22 +424,42 @@ public class MainActivity extends AppCompatActivity
     protected void onPause() {
         super.onPause();
         LocalBroadcastManager.getInstance(this).unregisterReceiver(receiver);
-        doUnbindService();
         prefs.unregisterOnSharedPreferenceChangeListener(this);
 
+    }
+
+    @Override
+    protected void onDestroy() {
+        billingManager.destroy();
+        super.onDestroy();
     }
 
     @Override
     public boolean onPrepareOptionsMenu(Menu menu) {
         final boolean loggedIn = steamService != null && steamService.isLoggedIn();
         drawerView.getHeaderView(0).setClickable(loggedIn);
+        menu.findItem(R.id.auto_discovery).setVisible(loggedIn);
+        menu.findItem(R.id.auto_vote).setVisible(loggedIn);
+        menu.findItem(R.id.search).setVisible(drawerItemId == R.id.games);
         return super.onPrepareOptionsMenu(menu);
     }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.menu_main, menu);
+        searchView = (SearchView) menu.findItem(R.id.search).getActionView();
         return true;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (!searchView.isIconified()) {
+            // Dismiss the SearchView
+            searchView.setQuery("", false);
+            searchView.setIconified(true);
+        } else {
+            super.onBackPressed();
+        }
     }
 
     @Override
@@ -460,7 +467,43 @@ public class MainActivity extends AppCompatActivity
         if (drawerToggle != null && drawerToggle.onOptionsItemSelected(item)) {
             return true;
         }
+        switch (item.getItemId()) {
+            case R.id.logcat:
+                sendLogcat();
+                return true;
+            case R.id.auto_discovery:
+                AutoDiscoverDialog.newInstance().show(getSupportFragmentManager(), AutoDiscoverDialog.TAG);
+                return true;
+            case R.id.auto_vote:
+                steamService.autoVote();
+                return true;
+        }
         return false;
+    }
+
+    /**
+     * Send Logcat output via email
+     */
+    private void sendLogcat() {
+        final File cacheDir = getExternalCacheDir();
+        if (cacheDir == null) {
+            Log.i(TAG, "Unable to save Logcat. Shared storage is unavailable!");
+            return;
+        }
+        final File file = new File(cacheDir, "idledaddy-logcat.txt");
+        try {
+            Utils.saveLogcat(file);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        final Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_EMAIL, new String[]{"steevsapps@gmail.com"});
+        intent.putExtra(Intent.EXTRA_SUBJECT, "Idle Daddy Logcat");
+        intent.putExtra(Intent.EXTRA_STREAM, FileProvider.getUriForFile(this,
+                getApplicationContext().getPackageName() + ".provider", file));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivity(intent);
     }
 
     public void clickHandler(View v) {
@@ -478,18 +521,20 @@ public class MainActivity extends AppCompatActivity
             case R.id.redeem:
                 RedeemDialog.newInstance().show(getSupportFragmentManager(), "redeem");
                 break;
+            case R.id.stop_button:
+                steamService.stopGame();
+                break;
+            case R.id.pause_resume_button:
+                if (steamService.isPaused()) {
+                    steamService.resumeGame();
+                } else {
+                    steamService.pauseGame();
+                }
+                break;
+            case R.id.next_button:
+                steamService.skipGame();
+                break;
         }
-    }
-
-    private void startSteam() {
-        ContextCompat.startForegroundService(this, SteamService.createIntent(this));
-        doBindService();
-    }
-
-    private void stopSteam() {
-        doUnbindService();
-        stopService(SteamService.createIntent(this));
-        finish();
     }
 
     /**
@@ -503,10 +548,9 @@ public class MainActivity extends AppCompatActivity
             setTitle(R.string.app_name);
             hideSpinnerNav();
             drawerView.getMenu().findItem(R.id.home).setChecked(true);
-            if (farming) {
-                showDropInfo();
-            }
             ((HomeFragment) fragment).update(loggedIn, farming);
+            showDropInfo(null);
+            showNowPlaying();
         } else if (fragment instanceof GamesFragment) {
             drawerItemId = R.id.games;
             setTitle("");
@@ -522,22 +566,34 @@ public class MainActivity extends AppCompatActivity
     }
 
     /**
-     * Show card drop info
+     * Show/hide card drop info
      */
-    private void showDropInfo() {
+    private void showDropInfo(@Nullable Intent intent) {
         final Fragment fragment = getCurrentFragment();
         if (fragment instanceof HomeFragment) {
-            ((HomeFragment) fragment).showDropInfo(steamService.getGameCount(), steamService.getCardCount());
+            final HomeFragment homeFragment = (HomeFragment) fragment;
+            if (intent != null) {
+                // Called by FARM_EVENT, always show drop info
+                final int gameCount = intent.getIntExtra(SteamService.GAME_COUNT, 0);
+                final int cardCount = intent.getIntExtra(SteamService.CARD_COUNT, 0);
+                homeFragment.showDropInfo(gameCount, cardCount);
+            } else if (farming) {
+                // Called by updateStatus(), only show drop info if we're farming
+                homeFragment.showDropInfo(steamService.getGameCount(), steamService.getCardCount());
+            } else {
+                // Hide drop info
+                homeFragment.hideDropInfo();
+            }
         }
     }
 
     /**
-     * Set games list for the games fragment
+     * Show now playing if we're idling any games
      */
-    private void setGames(List<Game> games) {
+    private void showNowPlaying() {
         final Fragment fragment = getCurrentFragment();
-        if (fragment instanceof  GamesFragment) {
-            ((GamesFragment) fragment).setGames(games);
+        if (fragment instanceof HomeFragment) {
+            ((HomeFragment) fragment).showNowPlaying(steamService.getCurrentGames(), steamService.isFarming(), steamService.isPaused());
         }
     }
 
@@ -551,13 +607,16 @@ public class MainActivity extends AppCompatActivity
 
     @Override
     public void onGamePicked(Game game) {
-        steamService.stopFarming();
         steamService.addGame(game);
     }
 
     @Override
+    public void onGamesPicked(List<Game> games) {
+        steamService.addGames(games);
+    }
+
+    @Override
     public void onGameRemoved(Game game) {
-        steamService.stopFarming();
         steamService.removeGame(game);
     }
 
@@ -568,31 +627,58 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    public void onGamesListReceived(List<Game> games) {
-        // Remove task fragment
-        final Fragment taskFragment = getSupportFragmentManager().findFragmentByTag("task_fragment");
-        if (taskFragment != null) {
-            getSupportFragmentManager()
-                    .beginTransaction()
-                    .remove(taskFragment)
-                    .commitAllowingStateLoss();
-        }
-        // Update GamesFragment
-        setGames(games);
-    }
-
-    @Override
     public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, String key) {
         if (key.equals("stay_awake")) {
-            if (Prefs.stayAwake()) {
-                // Don't let the screen turn off
+            if (PrefsManager.stayAwake()) {
+                // Keep device awake
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                steamService.acquireWakeLock();
             } else {
+                // Allow device to sleep
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                steamService.releaseWakeLock();
             }
         } else if (key.equals("offline")) {
             // Change status
-            steamService.changeStatus(Prefs.getOffline() ? EPersonaState.Offline : EPersonaState.Online);
+            steamService.changeStatus(PrefsManager.getOffline() ? EPersonaState.Offline : EPersonaState.Online);
         }
+    }
+
+    @Override
+    public void onBillingClientSetupFinished() {
+        if (billingManager.shouldDisplayAds()) {
+            loadAds();
+            drawerView.getMenu().findItem(R.id.remove_ads).setVisible(true);
+        }
+    }
+
+    @Override
+    public void onPurchasesUpdated(List<Purchase> purchases) {
+        if (!billingManager.shouldDisplayAds()) {
+            removeAds();
+            drawerView.getMenu().findItem(R.id.remove_ads).setVisible(false);
+        }
+    }
+
+    /**
+     * Inflate adView and load the ad request
+     */
+    private void loadAds() {
+        if (adView == null) {
+            adView = (AdView) adInflater.inflate();
+        }
+        MobileAds.initialize(this, "ca-app-pub-6413501894389361~6190763130");
+        final AdRequest adRequest = new AdRequest.Builder()
+                .addTestDevice("0BCBCBBDA9FCA8FE47AEA0C5D1BCBE99")
+                .addTestDevice("E8F66CC8599C1F21FDBC86370F926F88")
+                .build();
+        adView.loadAd(adRequest);
+    }
+
+    /**
+     * Remove the adView
+     */
+    private void removeAds() {
+        mainContainer.removeView(adView);
     }
 }

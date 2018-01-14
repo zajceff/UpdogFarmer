@@ -20,7 +20,7 @@ public class Game implements Comparable<Game>, Parcelable {
         appId = obj.optInt("appid", 0);
         name = obj.optString("name", "Unknown app");
         iconUrl = String.format(Locale.US, IMG_URL, appId, obj.optString("img_logo_url"));
-        hoursPlayed = 0;
+        hoursPlayed = obj.optInt("playtime_forever", 0) / 60f;
         dropsRemaining = 0;
     }
 
@@ -60,9 +60,7 @@ public class Game implements Comparable<Game>, Parcelable {
             return false;
         }
         final Game otherGame = (Game) obj;
-        return otherGame.appId == appId && otherGame.name.equals(name) &&
-                otherGame.iconUrl.equals(iconUrl) && otherGame.hoursPlayed == hoursPlayed &&
-                otherGame.dropsRemaining == dropsRemaining;
+        return otherGame.appId == appId;
     }
 
     @Override
@@ -71,10 +69,6 @@ public class Game implements Comparable<Game>, Parcelable {
         int result = 17;
         // Include a hash for each field
         result = 31 * result + appId;
-        result = 31 * result + name.hashCode();
-        result = 31 * result + iconUrl.hashCode();
-        result = 31 * result + Float.floatToIntBits(hoursPlayed);
-        result = 31 * result + dropsRemaining;
         return result;
     }
 

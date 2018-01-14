@@ -19,20 +19,22 @@
     <string name="redeem">Aktywuj produkt</string>
     <string name="redeem_msg">Wpisz kod produktu lub ID darmowej gry</string>
     <string name="ok">OK</string>
-    <string name="cat_idle">Ustawienia symulacji</string>
-    <string name="cat_general">Ustawienia ogólne</string>
+    <string name="cat_idle">Symulacja</string>
+    <string name="cat_general">Ogólne</string>
     <string name="pref_offline">Symulacja ukryta</string>
-    <string name="sum_offline">Symulacja gier pozostaje niewidoczna dla znajomych.</string>
+    <string name="sum_offline">Ustawia twój status na \"Offline\", więc symulacja gier pozostaje niewidoczna dla znajomych.</string>
     <string name="pref_stay_awake">Utrzymuj urządzenie w aktywności</string>
-    <string name="sum_stay_awake">Włącz jeśli twoje urządzenie nie utrzymuje połączenia WiFi podczas uśpienia.</string>
-    <string name="pref_simple">Symulacja pojedyncza</string>
-    <string name="sum_simple">Nie symuluje wszystkich gier równocześnie przez 2 godziny, ale każdą grę po kolei, dopóki wszystkie karty z danej gry zostaną uzyskane. Jeśli nie jesteś pewny zostaw opcję wyłączoną.</string>
+    <string name="sum_stay_awake">Włącz tę opcję jeśli Idle Daddy przestaje działać, kiedy ekran urządzenia jest wyłączony. UWAGA: Jeśli ta opcja jest włączona niektóre urządzenia automatycznie zamykają aplikacje po krótkim czasie działania.</string>
     <string name="pref_minimize_data">Zminimalizuj użycie danych</string>
     <string name="sum_minimize_data">Nie pobiera grafik gier.</string>
     <string name="pref_parental_pin">PIN kontroli rodzicielskiej</string>
     <string name="sum_parental_pin">Wpisz swój kod PIN kontroli rodzicielskiej, aby odblokować \'Widok rodzinny\'.</string>
     <string name="pref_blacklist">Gry wykluczone</string>
     <string name="sum_blacklist">Lista gier, dla których symulacja będzie pominięta.</string>
+    <string name="pref_hours_until">Godziny równoczesnej symulacji</string>
+    <string name="sum_hours_until">Liczba godzin, po których gry zaczną \"dropić karty\". Idle Daddy będzie symulował gry równocześnie do czasu osiągnięcia ustawionej liczby godzin. Dla większości użytkowników 3 godziny to wystarczająca ilość czasu.</string>
+    <string name="pref_include_free_games">Symulacja darmowych gier</string>
+    <string name="sum_include_free_games">Standardowo gry, takie jak Team Fortress 2 są wykluczone z symulacji (z technicznego punktu widzenia wszyscy je posiadają). Jeśli ta opcja jest włączona darmowe gry będą pokazywane na liście aktywności, jeśli wcześniej były uruchomione.</string>
     <string name="blacklist_hint">Wpisz AppID i naciśnij +</string>
     <string name="add_to_blacklist">Dodaj grę do listy wykluczonych</string>
     <string name="added_to_blacklist">Gra dodana do listy wykluczonch</string>
@@ -42,7 +44,7 @@
     <string name="close_drawer">Zamknij menu</string>
     <string name="home">Strona główna</string>
     <string name="games">Biblioteka gier</string>
-    <string name="no_games_found">Nie można uzyskać listy gier. Sprawdź czy twój profil Steam jest ustawiony na \'Publiczny\'.</string>
+    <string name="no_games_found">Nie można uzyskać listy gier. Sprawdź czy twój profil Steam jest ustawiony na \"Publiczny\".</string>
     <string name="now_playing">Aktualnie w grze</string>
     <string name="error_not_logged_in">Musisz być zalogowany do usługi Steam</string>
     <string name="invalid_password">Nieprawidłowe hasło</string>
@@ -61,14 +63,18 @@
     </plurals>
     <plurals name="card_drops_remaining">
 	<item quantity="one">%d karta do uzyskania</item>
-	<item quantity="few">%d kart do uzyskania</item>
+	<item quantity="few">%d karty do uzyskania</item>
     	<item quantity="other">%d kart do uzyskania</item>
     </plurals>
-    <string name="logged_in_elsewhere">Konto Steam w użyciu. Ponowię działanie, kiedy to będzie możliwe.</string>
+    <plurals name="hours_on_record">
+        <item quantity="one">%.1f godz. łącznie</item>
+        <item quantity="other">%.1f godz. łącznie</item>
+    </plurals>
+    <string name="logged_in_elsewhere">Konto Steam jest aktualnie używane. Ponowię działanie, kiedy to będzie możliwe.</string>
     <string name="web_login_failed">Nie można zalogować się na stronie Steam!</string>
     <string name="login_key_expired">Klucz logowania wygasł!</string>
-    <string name="stopped">Zatrzymano</string>
-    <string name="paused">Spauzowano</string>
+    <string name="stopped">Przerwano</string>
+    <string name="paused">Zatrzymano</string>
     <string name="idling_multiple">Symulacja równoczesna</string>
     <string name="logged_out">Wylogowano</string>
     <string name="about">O programie</string>
@@ -79,4 +85,21 @@
     <string name="activated">Aktywowano: %s</string>
     <string name="refresh">Odśwież</string>
     <string name="last_session">Ostatnia sesja</string>
+    <string name="play_all">Uruchom wszystkie</string>	
+    <string name="remove_ads">Usunięcie reklam</string>
+    <string name="logcat">Wyślij logi</string>
+    <string name="sort">Sortuj</string>
+    <string name="sort_alphabetically">Alfabetycznie</string>
+    <string name="sort_hours_played">Wg czasu gry</string>
+    <string name="auto_discovery_title">Automatyczna \"Kolejka Odkryć\"</string>
+    <string name="auto_discovery">Funkcja automatycznego przewijania twojej kolejki odkryć. Podczas letnich i zimowych wyprzedaży możesz otrzymać 3 karty kolekcjonerskie dziennie przez przeglądanie kolejki.</string>
+    <string name="generating_discovery">Generuję nową kolejkę odkryć…</string>
+    <string name="discovering">Przeglądanie %s (%d/%d)</string>
+    <string name="discovery_finished">Zakończono przeglądanie kolejki.</string>
+    <string name="discovery_error">Wystąpił błąd podczas przeglądania twojej kolejki odkryć. Spróbuj ponownie później.</string>
+    <string name="auto_vote">Zagłosuj automatycznie (Nagrody Steam)</string>
+    <string name="vote_successful">Zagłosowano pomyślnie!</string>
+    <string name="vote_failed">Głosowanie nieudane!</string>
+    <string name="apikey_access_denied">Odmowa dostępu do klucza Steam API, zastosuję klucz wbudowany.</string>
+    <string name="apikey_register_failed">Nie udało się zarejestrować klucza API, zastosuję klucz wbudowany.</string>
 </resources>

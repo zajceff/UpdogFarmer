@@ -1,5 +1,7 @@
 package com.steevsapps.idledaddy.fragments;
 
+import android.arch.lifecycle.Observer;
+import android.arch.lifecycle.ViewModelProviders;
 import android.os.Bundle;
 import android.support.annotation.Nullable;
 import android.support.design.widget.FloatingActionButton;
@@ -8,7 +10,6 @@ import android.support.v4.widget.SwipeRefreshLayout;
 import android.support.v7.widget.GridLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.SearchView;
-import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -20,13 +21,16 @@ import android.widget.Toast;
 
 import com.steevsapps.idledaddy.R;
 import com.steevsapps.idledaddy.adapters.GamesAdapter;
+import com.steevsapps.idledaddy.listeners.GamesListUpdateListener;
+import com.steevsapps.idledaddy.preferences.PrefsManager;
+import com.steevsapps.idledaddy.steam.SteamWebHandler;
 import com.steevsapps.idledaddy.steam.wrapper.Game;
-import com.steevsapps.idledaddy.utils.Prefs;
 
 import java.util.ArrayList;
 import java.util.List;
 
-public class GamesFragment extends Fragment implements SearchView.OnQueryTextListener, SwipeRefreshLayout.OnRefreshListener {
+public class GamesFragment extends Fragment
+        implements SearchView.OnQueryTextListener, SwipeRefreshLayout.OnRefreshListener, GamesListUpdateListener {
     private final static String TAG = GamesFragment.class.getSimpleName();
     private final static String STEAM_ID = "STEAM_ID";
     private final static String CURRENT_GAMES = "CURRENT_GAMES";
@@ -38,17 +42,17 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
     private GridLayoutManager layoutManager;
     private SearchView searchView;
     private TextView emptyView;
-    private DataFragment dataFragment;
+    private GamesViewModel viewModel;
     private FloatingActionButton fab;
 
     private long steamId;
     private ArrayList<Game> currentGames;
 
     // Spinner nav items
-    private final static int TAB_GAMES = 0;
-    private final static int TAB_LAST = 1;
+    public final static int TAB_GAMES = 0;
+    public final static int TAB_LAST = 1;
+    public final static int TAB_BLACKLIST = 2;
     private int currentTab = TAB_GAMES;
-
 
     public static GamesFragment newInstance(long steamId, ArrayList<Game> currentGames, int position) {
         final GamesFragment fragment = new GamesFragment();
@@ -69,6 +73,8 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
     public void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         steamId = getArguments().getLong(STEAM_ID);
+        viewModel = ViewModelProviders.of(this).get(GamesViewModel.class);
+        viewModel.init(SteamWebHandler.getInstance(), steamId);
         if (savedInstanceState != null) {
             currentGames = savedInstanceState.getParcelableArrayList(CURRENT_GAMES);
             currentTab = savedInstanceState.getInt(CURRENT_TAB);
@@ -86,7 +92,7 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
     public void onPause() {
         if (!currentGames.isEmpty()) {
             // Save idling session
-            Prefs.writeLastSession(currentGames);
+            PrefsManager.writeLastSession(currentGames);
         }
         super.onPause();
     }
@@ -105,13 +111,29 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
         refreshLayout = view.findViewById(R.id.refresh_layout);
         refreshLayout.setColorSchemeResources(R.color.colorPrimary, R.color.colorPrimaryDark);
         refreshLayout.setOnRefreshListener(this);
+        refreshLayout.setRefreshing(true);
 
         recyclerView = view.findViewById(R.id.games_list);
+        adapter = new GamesAdapter(recyclerView.getContext());
+        adapter.setListener(this);
+        adapter.setCurrentGames(currentGames);
+        adapter.setHeaderEnabled(currentTab == TAB_LAST);
         layoutManager = new GridLayoutManager(recyclerView.getContext(), getResources().getInteger(R.integer.game_columns));
+        layoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
+            @Override
+            public int getSpanSize(int position) {
+                switch (adapter.getItemViewType(position)) {
+                    case GamesAdapter.ITEM_HEADER:
+                        return layoutManager.getSpanCount();
+                    case GamesAdapter.ITEM_NORMAL:
+                        return 1;
+                    default:
+                        return -1;
+                }
+            }
+        });
         recyclerView.setLayoutManager(layoutManager);
         recyclerView.setHasFixedSize(true);
-        adapter = new GamesAdapter(recyclerView.getContext());
-        adapter.setCurrentGames(currentGames);
         recyclerView.setAdapter(adapter);
 
         emptyView = view.findViewById(R.id.empty_view);
@@ -120,7 +142,13 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
         if (steamId > 0) {
             fab.show();
         }
-        dataFragment = getDataFragment();
+
+        viewModel.getGames().observe(this, new Observer<List<Game>>() {
+            @Override
+            public void onChanged(@Nullable List<Game> games) {
+                setGames(games);
+            }
+        });
         loadData();
 
         return view;
@@ -137,9 +165,16 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        if (item.getItemId() == R.id.refresh) {
-            fetchGames();
-            return true;
+        switch (item.getItemId()) {
+            case R.id.refresh:
+                fetchGames();
+                return true;
+            case R.id.sort_alphabetically:
+                viewModel.sortAlphabetically();
+                return true;
+            case R.id.sort_hours_played:
+                viewModel.sortHoursPlayed();
+                return true;
         }
         return super.onOptionsItemSelected(item);
     }
@@ -158,17 +193,7 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
     }
 
     private void loadData() {
-        if (dataFragment != null) {
-            // Restore games list
-            Log.i(TAG, "Restoring games list");
-            setGames(dataFragment.getData());
-        } else {
-            // Add data fragment to store games during configuration changes
-            dataFragment = new DataFragment();
-            getActivity().getSupportFragmentManager()
-                    .beginTransaction()
-                    .add(dataFragment, "data")
-                    .commit();
+        if (viewModel.getGames().getValue() == null) {
             fetchGames();
         }
     }
@@ -189,41 +214,59 @@ public class GamesFragment extends Fragment implements SearchView.OnQueryTextLis
         fetchGames();
     }
 
-    @Nullable
-    private DataFragment getDataFragment() {
-        return (DataFragment) getActivity().getSupportFragmentManager().findFragmentByTag("data");
+    /**
+     * Switch to the 'Blacklist' tab
+     */
+    public void switchToBlacklist() {
+        currentTab = TAB_BLACKLIST;
+        fetchGames();
     }
 
     private void fetchGames() {
-        if (currentTab == TAB_GAMES) {
+        if (currentTab == TAB_LAST) {
+            // Load last idling session
+            final List<Game> games = !currentGames.isEmpty() ? currentGames : PrefsManager.getLastSession();
+            viewModel.setGames(games);
+        } else {
             // Fetch games from Steam
             refreshLayout.setRefreshing(true);
-            final FetchGamesFragment taskFragment = FetchGamesFragment.newInstance(steamId);
-            getActivity().getSupportFragmentManager()
-                    .beginTransaction()
-                    .add(taskFragment, "task_fragment")
-                    .commit();
-        } else if (currentTab == TAB_LAST) {
-            // Load last idling session
-            final List<Game> games = !currentGames.isEmpty() ? currentGames : Prefs.getLastSession();
-            setGames(games);
+            viewModel.fetchGames();
         }
-
     }
 
     /**
      * Update games list
      * @param games the list of games
      */
-    public void setGames(List<Game> games) {
-        dataFragment.setData(games);
-        adapter.setData(games);
-        refreshLayout.setRefreshing(false);
-        emptyView.setVisibility(games.isEmpty() ? View.VISIBLE : View.GONE);
+    private void setGames(List<Game> games) {
+        if (currentTab == TAB_BLACKLIST) {
+            // Only list blacklisted games
+            final List<String> blacklist = PrefsManager.getBlacklist();
+            final List<Game> blacklistGames = new ArrayList<>();
+            for (Game game : games) {
+                if (blacklist.contains(String.valueOf(game.appId))) {
+                    blacklistGames.add(game);
+                }
+            }
+            adapter.setHeaderEnabled(false);
+            adapter.setData(blacklistGames);
+            emptyView.setVisibility(blacklistGames.isEmpty() ? View.VISIBLE : View.GONE);
+        } else {
+            adapter.setHeaderEnabled(!games.isEmpty() && currentTab == TAB_LAST);
+            adapter.setData(games);
+            emptyView.setVisibility(games.isEmpty() ? View.VISIBLE : View.GONE);
+        }
     }
 
     @Override
     public void onRefresh() {
         fetchGames();
+    }
+
+    @Override
+    public void onGamesListUpdated() {
+        // Scroll to top
+        recyclerView.scrollToPosition(0);
+        refreshLayout.setRefreshing(false);
     }
 }

@@ -2,35 +2,25 @@ apply plugin: 'com.android.application'
 
 android {
     compileSdkVersion 26
-    buildToolsVersion "25.0.2"
     defaultConfig {
         applicationId "com.steevsapps.idledaddy"
         minSdkVersion 15
         targetSdkVersion 26
-        versionCode 34
-        versionName "2.0.11"
+        versionCode 55
+        versionName "2.0.32"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
+            multiDexEnabled false
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
-    }
 
-    productFlavors {
-        dev {
-            // Only enable multi-dex for dev builds (prod doesn't need it because of proguard).
-            // minSdk 21 enables pre-dexing to speed up the build process.
-            minSdkVersion 21
+        debug {
             multiDexEnabled true
-        }
-
-        prod {
-            // The actual minSdkVersion for the production version.
-            minSdkVersion 15
         }
     }
 
@@ -40,26 +30,28 @@ android {
 }
 
 ext {
-    supportLibraryVersion = "26.0.1"
+    supportLibraryVersion = "26.1.0"
 }
 
 dependencies {
-    compile fileTree(dir: 'libs', include: ['*.jar'])
-    androidTestCompile('com.android.support.test.espresso:espresso-core:2.2.2', {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    androidTestImplementation('com.android.support.test.espresso:espresso-core:2.2.2', {
         exclude group: 'com.android.support', module: 'support-annotations'
     })
-    compile "com.android.support:appcompat-v7:$supportLibraryVersion"
-    compile "com.android.support:cardview-v7:$supportLibraryVersion"
-    compile "com.android.support:design:$supportLibraryVersion"
-    compile "com.android.support:preference-v7:$supportLibraryVersion"
-    compile "com.android.support:preference-v14:$supportLibraryVersion"
-    compile "com.android.support:support-media-compat:$supportLibraryVersion"
-    compile 'com.android.support.constraint:constraint-layout:1.0.2'
-    compile 'com.github.steevp:SteamKit-Java:715b42256c'
-    compile 'org.jsoup:jsoup:1.10.3'
-    compile 'com.github.bumptech.glide:glide:3.8.0'
-    compile "com.android.support:support-v4:$supportLibraryVersion"
-    compile 'com.google.android.gms:play-services-ads:11.0.4'
-    compile 'com.google.code.gson:gson:2.8.2'
-    testCompile 'junit:junit:4.12'
+    implementation "com.android.support:appcompat-v7:$supportLibraryVersion"
+    implementation "com.android.support:cardview-v7:$supportLibraryVersion"
+    implementation "com.android.support:design:$supportLibraryVersion"
+    implementation "com.android.support:preference-v7:$supportLibraryVersion"
+    implementation "com.android.support:preference-v14:$supportLibraryVersion"
+    implementation "com.android.support:support-media-compat:$supportLibraryVersion"
+    implementation 'com.android.support.constraint:constraint-layout:1.0.2'
+    implementation 'com.github.steevp:SteamKit-Java:6b91c484c5'
+    implementation 'org.jsoup:jsoup:1.10.3'
+    implementation 'com.github.bumptech.glide:glide:3.8.0'
+    implementation "com.android.support:support-v4:$supportLibraryVersion"
+    implementation 'com.google.android.gms:play-services-ads:11.6.0'
+    implementation 'com.android.billingclient:billing:1.0'
+    implementation 'com.google.code.gson:gson:2.8.2'
+    implementation "android.arch.lifecycle:extensions:1.0.0"
+    testImplementation 'junit:junit:4.12'
 }

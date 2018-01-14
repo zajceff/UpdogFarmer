@@ -1,53 +1,38 @@
 package com.steevsapps.idledaddy;
 
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.ServiceConnection;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.support.design.widget.CoordinatorLayout;
 import android.support.design.widget.Snackbar;
+import android.support.design.widget.TextInputEditText;
 import android.support.design.widget.TextInputLayout;
 import android.support.v4.app.Fragment;
 import android.support.v4.content.LocalBroadcastManager;
-import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.ProgressBar;
 
+import com.steevsapps.idledaddy.base.BaseActivity;
 import com.steevsapps.idledaddy.fragments.TimeoutFragment;
 import com.steevsapps.idledaddy.listeners.TimeoutListener;
+import com.steevsapps.idledaddy.preferences.PrefsManager;
 import com.steevsapps.idledaddy.steam.SteamService;
-import com.steevsapps.idledaddy.utils.Prefs;
+import com.steevsapps.idledaddy.utils.Utils;
 
 import uk.co.thomasc.steamkit.base.generated.steamlanguage.EResult;
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.types.LogOnDetails;
 
 import static com.steevsapps.idledaddy.steam.SteamService.LOGIN_EVENT;
 
-public class LoginActivity extends AppCompatActivity implements TimeoutListener {
+public class LoginActivity extends BaseActivity implements TimeoutListener {
     private final static String TAG = LoginActivity.class.getSimpleName();
 
     private final static String LOGIN_IN_PROGRESS = "LOGIN_IN_PROGRESS";
     private final static String TWO_FACTOR_REQUIRED = "TWO_FACTOR_REQUIRED";
-
-    boolean isBound;
-    private SteamService steamService;
-    private ServiceConnection connection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName componentName, IBinder service) {
-            steamService = ((SteamService.LocalBinder) service).getService();
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName componentName) {
-            steamService = null;
-        }
-    };
 
     private boolean loginInProgress;
     private boolean twoFactorRequired;
@@ -55,16 +40,19 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
     // Views
     private CoordinatorLayout coordinatorLayout;
     private TextInputLayout usernameInput;
+    private TextInputEditText usernameEditText;
     private TextInputLayout passwordInput;
+    private TextInputEditText passwordEditText;
     private TextInputLayout twoFactorInput;
+    private TextInputEditText twoFactorEditText;
     private Button loginButton;
     private ProgressBar progress;
 
     // Used to receive messages from SteamService
-    private BroadcastReceiver receiver = new BroadcastReceiver() {
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (intent.getAction().equals(SteamService.LOGIN_EVENT)) {
+            if (SteamService.LOGIN_EVENT.equals(intent.getAction())) {
                 stopTimeout();
                 progress.setVisibility(View.GONE);
                 final EResult result = (EResult) intent.getSerializableExtra(SteamService.RESULT);
@@ -80,32 +68,19 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
                         twoFactorRequired = result == EResult.AccountLoginDeniedNeedTwoFactor;
                         twoFactorInput.setVisibility(View.VISIBLE);
                         twoFactorInput.setError(getString(R.string.steamguard_required));
-                        twoFactorInput.getEditText().requestFocus();
+                        twoFactorEditText.requestFocus();
                     } else if (result == EResult.TwoFactorCodeMismatch || result == EResult.InvalidLoginAuthCode) {
                         twoFactorInput.setError(getString(R.string.invalid_code));
                     }
                 } else {
                     // Save username
-                    Prefs.writeUsername(usernameInput.getEditText().getText().toString().trim());
+                    final String username = Utils.removeSpecialChars(usernameEditText.getText().toString()).trim();
+                    PrefsManager.writeUsername(username);
                     finish();
                 }
             }
         }
     };
-
-    private void doBindService() {
-        bindService(new Intent(LoginActivity.this, SteamService.class),
-                connection, Context.BIND_AUTO_CREATE);
-        isBound = true;
-    }
-
-    private void doUnbindService() {
-        if (isBound) {
-            // Detach our existing connection
-            unbindService(connection);
-            isBound = false;
-        }
-    }
 
     /**
      * Start timeout handler in case the server doesn't respond
@@ -144,9 +119,12 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
         setContentView(R.layout.activity_login);
 
         coordinatorLayout = findViewById(R.id.coordinator);
-        usernameInput = findViewById(R.id.username);
-        passwordInput = findViewById(R.id.password);
-        twoFactorInput = findViewById(R.id.two_factor);
+        usernameInput = findViewById(R.id.username_input);
+        usernameEditText = findViewById(R.id.username_edittext);
+        passwordInput = findViewById(R.id.password_input);
+        passwordEditText = findViewById(R.id.password_edittext);
+        twoFactorInput = findViewById(R.id.two_factor_input);
+        twoFactorEditText = findViewById(R.id.two_factor_edittext);
         loginButton = findViewById(R.id.login);
         progress = findViewById(R.id.progress);
 
@@ -158,7 +136,7 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
             progress.setVisibility(loginInProgress ? View.VISIBLE : View.GONE);
         } else {
             // Restore saved username if any
-            usernameInput.getEditText().setText(Prefs.getUsername());
+            usernameEditText.setText(PrefsManager.getUsername());
         }
     }
 
@@ -172,7 +150,6 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
     @Override
     protected void onPause() {
         super.onPause();
-        doUnbindService();
         LocalBroadcastManager.getInstance(this).unregisterReceiver(receiver);
 
         if (isFinishing()) {
@@ -183,14 +160,14 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
     @Override
     protected void onResume() {
         super.onResume();
-        doBindService();
         final IntentFilter filter = new IntentFilter(LOGIN_EVENT);
         LocalBroadcastManager.getInstance(this).registerReceiver(receiver, filter);
     }
 
     public void doLogin(View v) {
-        final String username = usernameInput.getEditText().getText().toString().trim();
-        final String password = passwordInput.getEditText().getText().toString().trim();
+        // Steam strips all non-ASCII characters from usernames and passwords
+        final String username = Utils.removeSpecialChars(usernameEditText.getText().toString()).trim();
+        final String password = Utils.removeSpecialChars(passwordEditText.getText().toString()).trim();
         if (!username.isEmpty() && !password.isEmpty()) {
             loginButton.setEnabled(false);
             progress.setVisibility(View.VISIBLE);
@@ -198,12 +175,12 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
             details.username(username);
             details.password(password);
             if (twoFactorRequired) {
-                details.twoFactorCode(twoFactorInput.getEditText().getText().toString());
+                details.twoFactorCode(twoFactorEditText.getText().toString().trim());
             } else {
-                details.authCode(twoFactorInput.getEditText().getText().toString().trim());
+                details.authCode(twoFactorEditText.getText().toString().trim());
             }
             details.shouldRememberPassword = true;
-            steamService.login(details);
+            getService().login(details);
             startTimeout();
         }
     }
@@ -214,6 +191,5 @@ public class LoginActivity extends AppCompatActivity implements TimeoutListener 
         loginButton.setEnabled(true);
         progress.setVisibility(View.GONE);
         Snackbar.make(coordinatorLayout, R.string.timeout_error, Snackbar.LENGTH_LONG).show();
-        steamService.disconnect();
     }
 }

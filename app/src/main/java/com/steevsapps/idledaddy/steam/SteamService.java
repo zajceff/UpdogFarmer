@@ -34,8 +34,8 @@ import com.steevsapps.idledaddy.R;
 import com.steevsapps.idledaddy.handlers.FreeLicense;
 import com.steevsapps.idledaddy.handlers.FreeLicenseCallback;
 import com.steevsapps.idledaddy.listeners.LogcatDebugListener;
+import com.steevsapps.idledaddy.preferences.PrefsManager;
 import com.steevsapps.idledaddy.steam.wrapper.Game;
-import com.steevsapps.idledaddy.utils.Prefs;
 import com.steevsapps.idledaddy.utils.Utils;
 
 import java.io.File;
@@ -45,10 +45,10 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -70,6 +70,7 @@ import uk.co.thomasc.steamkit.steam3.handlers.steamuser.callbacks.LoggedOnCallba
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.callbacks.LoginKeyCallback;
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.callbacks.PurchaseResponseCallback;
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.callbacks.UpdateMachineAuthCallback;
+import uk.co.thomasc.steamkit.steam3.handlers.steamuser.callbacks.WebAPIUserNonceCallback;
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.types.LogOnDetails;
 import uk.co.thomasc.steamkit.steam3.handlers.steamuser.types.MachineAuthDetails;
 import uk.co.thomasc.steamkit.steam3.steamclient.SteamClient;
@@ -87,6 +88,9 @@ public class SteamService extends Service {
     private final static String TAG = SteamService.class.getSimpleName();
     private final static int NOTIF_ID = 6896; // Ongoing notification ID
     private final static String CHANNEL_ID = "idle_channel"; // Notification channel
+    // Some Huawei phones reportedly kill apps when they hold a WakeLock for a long time.
+    // This can be prevented by using a WakeLock tag from the PowerGenie whitelist.
+    private final static String WAKELOCK_TAG = "LocationManagerService";
 
     // Events
     public final static String LOGIN_EVENT = "LOGIN_EVENT"; // Emitted on login
@@ -99,6 +103,7 @@ public class SteamService extends Service {
     public final static String PERSONA_EVENT = "PERSONA_EVENT"; // Emitted when we get PersonaStateCallback
     public final static String PERSONA_NAME = "PERSONA_NAME"; // Username
     public final static String AVATAR_HASH = "AVATAR_HASH"; // User avatar hash
+    public final static String NOW_PLAYING_EVENT = "NOW_PLAYING_EVENT"; // Emitted when the game you're idling changes
 
     // Actions
     public final static String SKIP_INTENT = "SKIP_INTENT";
@@ -118,21 +123,21 @@ public class SteamService extends Service {
     private List<Game> currentGames = new ArrayList<>();
     private int gameCount = 0;
     private int cardCount = 0;
-    private String personaName = "";
-    private String avatarHash = "";
+    private LogOnDetails logOnDetails = null;
 
     private volatile boolean running = false; // Service running
     private volatile boolean connected = false; // Connected to Steam
     private volatile boolean farming = false; // Currently farming
     private volatile boolean paused = false; // Game paused
     private volatile boolean waiting = false; // Waiting for user to stop playing
+    private volatile boolean loginInProgress = false; // Currently logging in, so don't reconnect on disconnects
 
     private long steamId;
     private boolean loggedIn = false;
+    private boolean isHuawei = false;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(8);
-    private Future<?> loginHandle;
     private ScheduledFuture<?> farmHandle;
     private ScheduledFuture<?> waitHandle;
     private ScheduledFuture<?> timeoutHandle;
@@ -171,7 +176,7 @@ public class SteamService extends Service {
         }
     };
 
-    private final class FarmTask implements Runnable {
+    private final Runnable farmTask = new Runnable() {
         @Override
         public void run() {
             try {
@@ -180,14 +185,12 @@ public class SteamService extends Service {
                 Log.i(TAG, "FarmTask failed", e);
             }
         }
-    }
-
-    private final FarmTask farmTask = new FarmTask();
+    };
 
     /**
      * Wait for user to NOT be in-game so we can resume idling
      */
-    private final class WaitTask implements Runnable {
+    private final Runnable waitTask = new Runnable() {
         @Override
         public void run() {
             try {
@@ -206,27 +209,24 @@ public class SteamService extends Service {
                 Log.i(TAG, "WaitTask failed", e);
             }
         }
-    }
-
-    private final WaitTask waitTask = new WaitTask();
+    };
 
     /**
-     * Task to restart connection if it hangs
-     * TODO: determine if this is really needed and if so fix in SteamKit
+     * This task is executed if the connection takes longer than 15 seconds.
+     * Workaround for reconnect hangs..
      */
-    private final class TimeoutTask implements Runnable {
+    private final Runnable timeoutTask = new Runnable() {
         @Override
         public void run() {
-            Log.i(TAG, "Reconnecting (connection timed out)");
+            Log.i(TAG, "Connection timed out!");
             steamClient.disconnect();
         }
-    }
-
-    private final TimeoutTask timeoutTask = new TimeoutTask();
+    };
 
     public void startFarming() {
         if (!farming) {
             farming = true;
+            paused = false;
             executor.execute(farmTask);
         }
     }
@@ -234,6 +234,7 @@ public class SteamService extends Service {
     public void stopFarming() {
         if (farming) {
             farming = false;
+            gamesToFarm = null;
             farmIndex = 0;
             currentGames.clear();
             unscheduleFarmTask();
@@ -289,7 +290,8 @@ public class SteamService extends Service {
 
         if (gamesToFarm == null) {
             Log.i(TAG, "Invalid cookie data or no internet, reconnecting");
-            steamClient.disconnect();
+            //steamClient.disconnect();
+            steamUser.requestWebAPIUserNonce();
             return;
         }
 
@@ -324,8 +326,8 @@ public class SteamService extends Service {
         final Game game = gamesToFarm.get(farmIndex);
 
         // TODO: Steam only updates play time every half hour, so maybe we should keep track of it ourselves
-        if (game.hoursPlayed >= 2 || gamesToFarm.size() == 1 || Prefs.simpleFarming() || farmIndex > 0) {
-            // If a game has over 2 hrs we can just idle it
+        if (game.hoursPlayed >= PrefsManager.getHoursUntilDrops() || gamesToFarm.size() == 1 || farmIndex > 0) {
+            // Idle a single game
             new Handler(Looper.getMainLooper()).post(new Runnable() {
                 @Override
                 public void run() {
@@ -338,12 +340,9 @@ public class SteamService extends Service {
             idleMultiple(gamesToFarm);
             scheduleFarmTask();
         }
-
-        // Reset inventory notifications
-        webHandler.viewInventory();
     }
 
-    private void skipGame() {
+    public void skipGame() {
         if (gamesToFarm == null || gamesToFarm.size() < 2) {
             return;
         }
@@ -356,22 +355,28 @@ public class SteamService extends Service {
         idleSingle(gamesToFarm.get(farmIndex));
     }
 
-    private void stopGame() {
+    public void stopGame() {
+        paused = false;
         stopPlaying();
         stopFarming();
         updateNotification(getString(R.string.stopped));
         LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(STOP_EVENT));
     }
 
-    private void pauseGame() {
+    public void pauseGame() {
         paused = true;
         stopPlaying();
         showPausedNotification();
+        // Tell the activity to update
+        LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(NOW_PLAYING_EVENT));
     }
 
-    private void resumeGame() {
-        paused = false;
-        if (currentGames.size() == 1) {
+    public void resumeGame() {
+        if (farming) {
+            Log.i(TAG, "Resume farming");
+            paused = false;
+            executor.execute(farmTask);
+        } else if (currentGames.size() == 1) {
             Log.i(TAG, "Resume playing");
             idleSingle(currentGames.get(0));
         } else if (currentGames.size() > 1) {
@@ -391,6 +396,26 @@ public class SteamService extends Service {
         if (farmHandle != null) {
             Log.i(TAG, "Stopping farmtask");
             farmHandle.cancel(true);
+        }
+    }
+
+    /**
+     * Start the connection timeout
+     */
+    private void startTimeout() {
+        stopTimeout();
+        Log.i(TAG, "Starting connection timeout (15 seconds)");
+        timeoutHandle = scheduler.schedule(timeoutTask, 15, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Stop connection timeout
+     */
+    private void stopTimeout() {
+        if (timeoutHandle != null) {
+            Log.i(TAG, "Stopping connection timeout");
+            timeoutHandle.cancel(true);
+            timeoutHandle = null;
         }
     }
 
@@ -414,10 +439,13 @@ public class SteamService extends Service {
         steamFriends = steamClient.getHandler(SteamFriends.class);
         steamClient.addHandler(new FreeLicense());
         freeLicense = steamClient.getHandler(FreeLicense.class);
-        // Acquire WakeLock to keep the CPU from sleeping
-        final PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "IdleDaddyWakeLock");
-        wakeLock.acquire();
+        // Detect Huawei devices running Lollipop which have a bug with MediaStyle notifications
+        isHuawei = (android.os.Build.VERSION.SDK_INT == Build.VERSION_CODES.LOLLIPOP_MR1 ||
+                android.os.Build.VERSION.SDK_INT == Build.VERSION_CODES.LOLLIPOP) &&
+                Build.MANUFACTURER.toLowerCase(Locale.getDefault()).contains("huawei");
+        if (PrefsManager.stayAwake()) {
+            acquireWakeLock();
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Create notification channel
             createChannel();
@@ -446,12 +474,18 @@ public class SteamService extends Service {
     @Override
     public void onDestroy() {
         Log.i(TAG, "Service destroyed");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                steamClient.disconnect();
+            }
+        }).start();
         stopForeground(true);
         running = false;
         stopFarming();
         executor.shutdownNow();
         scheduler.shutdownNow();
-        wakeLock.release();
+        releaseWakeLock();
         // Somebody was getting IllegalArgumentException from this, possibly because I was calling
         // super.onDestroy() at the beginning, but I'll still catch it just to be safe.
         try {
@@ -479,15 +513,16 @@ public class SteamService extends Service {
         nm.createNotificationChannel(channel);
     }
 
-    /**
-     * Check if user is logged in
-     */
     public boolean isLoggedIn() {
         return loggedIn;
     }
 
     public boolean isFarming() {
         return farming;
+    }
+
+    public boolean isPaused() {
+        return paused;
     }
 
     /**
@@ -505,14 +540,6 @@ public class SteamService extends Service {
         return cardCount;
     }
 
-    public String getPersonaName() {
-        return personaName;
-    }
-
-    public String getAvatarHash() {
-        return avatarHash;
-    }
-
     public long getSteamId() {
         return steamId;
     }
@@ -520,6 +547,29 @@ public class SteamService extends Service {
     public void changeStatus(EPersonaState status) {
         if (isLoggedIn()) {
             steamFriends.setPersonaState(status);
+        }
+    }
+
+    /**
+     * Acquire WakeLock to keep the CPU from sleeping
+     */
+    public void acquireWakeLock() {
+        if (wakeLock == null) {
+            Log.i(TAG, "Acquiring WakeLock");
+            final PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG);
+            wakeLock.acquire();
+        }
+    }
+
+    /**
+     * Release the WakeLock
+     */
+    public void releaseWakeLock() {
+        if (wakeLock != null) {
+            Log.i(TAG, "Releasing WakeLock");
+            wakeLock.release();
+            wakeLock = null;
         }
     }
 
@@ -546,12 +596,17 @@ public class SteamService extends Service {
                 notificationIntent, 0);
 
         final NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setStyle(new MediaStyle())
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(getString(R.string.app_name))
                 .setContentText(getString(R.string.now_playing2, game.name))
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setContentIntent(pendingIntent);
+
+        // MediaStyle causes a crash on certain Huawei devices running Lollipop
+        // https://stackoverflow.com/questions/34851943/couldnt-expand-remoteviews-mediasessioncompat-and-notificationcompat-mediastyl
+        if (!isHuawei) {
+            builder.setStyle(new MediaStyle());
+        }
 
         if (game.dropsRemaining > 0) {
             // Show drops remaining
@@ -561,17 +616,17 @@ public class SteamService extends Service {
         // Add the stop and pause actions
         final PendingIntent stopIntent = PendingIntent.getBroadcast(this, 0, new Intent(STOP_INTENT), PendingIntent.FLAG_CANCEL_CURRENT);
         final PendingIntent pauseIntent = PendingIntent.getBroadcast(this, 0, new Intent(PAUSE_INTENT), PendingIntent.FLAG_CANCEL_CURRENT);
-        builder.addAction(R.drawable.ic_stop_white_32dp, getString(R.string.stop), stopIntent);
-        builder.addAction(R.drawable.ic_pause_white_32dp, getString(R.string.pause), pauseIntent);
+        builder.addAction(R.drawable.ic_action_stop, getString(R.string.stop), stopIntent);
+        builder.addAction(R.drawable.ic_action_pause, getString(R.string.pause), pauseIntent);
 
         if (farming) {
             // Add the skip action
             final PendingIntent skipIntent = PendingIntent.getBroadcast(this, 0, new Intent(SKIP_INTENT), PendingIntent.FLAG_CANCEL_CURRENT);
-            builder.addAction(R.drawable.ic_skip_next_white_32dp, getString(R.string.skip), skipIntent);
+            builder.addAction(R.drawable.ic_action_skip, getString(R.string.skip), skipIntent);
         }
 
         final NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (!Prefs.minimizeData()) {
+        if (!PrefsManager.minimizeData()) {
             // Load game icon into notification
             Glide.with(getApplicationContext())
                     .load(game.iconUrl)
@@ -614,8 +669,8 @@ public class SteamService extends Service {
                 .setContentText(getString(R.string.idling_multiple))
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setContentIntent(pendingIntent)
-                .addAction(R.drawable.ic_stop_white_32dp, getString(R.string.stop), stopIntent)
-                .addAction(R.drawable.ic_pause_white_32dp, getString(R.string.pause), pauseIntent)
+                .addAction(R.drawable.ic_action_stop, getString(R.string.stop), stopIntent)
+                .addAction(R.drawable.ic_action_pause, getString(R.string.pause), pauseIntent)
                 .build();
 
         final NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -630,7 +685,7 @@ public class SteamService extends Service {
                 .setContentTitle(getString(R.string.app_name))
                 .setContentText(getString(R.string.paused))
                 .setContentIntent(pi)
-                .addAction(R.drawable.ic_play_arrow_white_32dp, getString(R.string.resume), resumeIntent)
+                .addAction(R.drawable.ic_action_play, getString(R.string.resume), resumeIntent)
                 .build();
         final NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         nm.notify(NOTIF_ID, notification);
@@ -647,6 +702,7 @@ public class SteamService extends Service {
 
     private void idleSingle(Game game) {
         Log.i(TAG, "Now playing " + game.name);
+        paused = false;
         currentGames.clear();
         currentGames.add(game);
         playGame(game.appId);
@@ -655,6 +711,7 @@ public class SteamService extends Service {
 
     private void idleMultiple(List<Game> games) {
         Log.i(TAG, "Idling multiple");
+        paused = false;
         final List<Game> gamesCopy = new ArrayList<>(games);
         currentGames.clear();
 
@@ -680,6 +737,7 @@ public class SteamService extends Service {
     }
 
     public void addGame(Game game) {
+        stopFarming();
         if (currentGames.isEmpty()) {
             idleSingle(game);
         } else {
@@ -688,26 +746,36 @@ public class SteamService extends Service {
         }
     }
 
+    public void addGames(List<Game> games) {
+        stopFarming();
+        if (games.size() == 1) {
+            idleSingle(games.get(0));
+        } else if (games.size() > 1){
+            idleMultiple(games);
+        } else {
+            stopGame();
+        }
+    }
+
     public void removeGame(Game game) {
+        stopFarming();
         currentGames.remove(game);
         if (currentGames.size() == 1) {
             idleSingle(currentGames.get(0));
         } else if (currentGames.size() > 1) {
             idleMultiple(currentGames);
         } else {
-            stopPlaying();
-            updateNotification(getString(R.string.stopped));
+            stopGame();
         }
     }
 
     public void start() {
         running = true;
-        executor.execute(new Runnable() {
-            @Override
-            public void run() {
-                steamClient.connect();
-            }
-        });
+        if (!PrefsManager.getLoginKey().isEmpty()) {
+            // We can log in using saved credentials
+            connect();
+        }
+        // Schedule the the event handler
         scheduler.scheduleWithFixedDelay(new Runnable() {
             @Override
             public void run() {
@@ -722,31 +790,34 @@ public class SteamService extends Service {
 
     public void login(final LogOnDetails details) {
         Log.i(TAG, "logging in");
+        loginInProgress = true;
         details.loginId = NOTIF_ID;
-        loginHandle = executor.submit(new Runnable() {
-            @Override
-            public void run() {
-                waitForConnection();
-                steamUser.logOn(details, Prefs.getMachineId());
-            }
-        });
+        logOnDetails = details;
+        connect();
     }
 
     public void logoff() {
         Log.i(TAG, "logging off");
+        loggedIn = false;
         steamId = 0;
+        logOnDetails = null;
+        currentGames.clear();
         stopFarming();
         steamUser.logOff();
-        Prefs.writeUsername("");
-        Prefs.writeLoginKey("");
-        disconnect();
+        PrefsManager.clearUser();
         updateNotification(getString(R.string.logged_out));
     }
 
-    public void disconnect() {
-        if (loginHandle != null) {
-            loginHandle.cancel(true);
-        }
+    private void connect() {
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                steamClient.connect();
+            }
+        });
+    }
+
+    private void disconnect() {
         executor.execute(new Runnable() {
             @Override
             public void run() {
@@ -760,34 +831,40 @@ public class SteamService extends Service {
      */
     public void redeemKey(final String key) {
         if (key.matches("\\d+")) {
-            freeLicense.requestFreeLicense(Integer.parseInt(key));
+            try {
+                freeLicense.requestFreeLicense(Integer.parseInt(key));
+            } catch (NumberFormatException e) {
+                showToast(getString(R.string.invalid_key));
+            }
         } else {
             steamUser.registerProductKey(key);
         }
     }
 
-
-    private void startTimeout() {
-        stopTimeout();
-        Log.i(TAG, "Starting timeout");
-        timeoutHandle = scheduler.schedule(timeoutTask, 15, TimeUnit.SECONDS);
-    }
-
-    private void stopTimeout() {
-        if (timeoutHandle != null) {
-            Log.i(TAG, "Stopping timeout");
-            timeoutHandle.cancel(true);
-        }
+    public void autoVote() {
+        executor.execute(new Runnable() {
+            @Override
+            public void run() {
+                final int msgId = webHandler.autoVote() ? R.string.vote_successful : R.string.vote_failed;
+                showToast(getString(msgId));
+            }
+        });
     }
 
     /**
-     * Try to login using saved details in prefs
+     * Perform log in. Needs to happen as soon as we connect or else we'll get an error
+     */
+    private void doLogin() {
+        steamUser.logOn(logOnDetails, PrefsManager.getMachineId());
+        logOnDetails = null; // No longer need this
+    }
+
+    /**
+     * Log in using saved credentials
      */
     private void attemptRestoreLogin() {
-        // Just in case
-        Prefs.init(this);
-        final String username = Prefs.getUsername();
-        final String loginKey = Prefs.getLoginKey();
+        final String username = PrefsManager.getUsername();
+        final String loginKey = PrefsManager.getLoginKey();
         final byte[] sentryData = readSentryFile();
         if (username.isEmpty() || loginKey.isEmpty()) {
             return;
@@ -800,19 +877,58 @@ public class SteamService extends Service {
             details.sentryFileHash = CryptoHelper.SHAHash(sentryData);
         }
         details.shouldRememberPassword = true;
-        login(details);
+        details.loginId = NOTIF_ID;
+        steamUser.logOn(details, PrefsManager.getMachineId());
     }
 
-    private void waitForConnection() {
-        while(running && !connected) {
-            try {
-                Log.i(TAG, "Waiting for connection...");
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-                break;
+    private boolean attemptAuthentication(String nonce) {
+        Log.i(TAG, "Attempting SteamWeb authentication");
+        for (int i=0;i<3;i++) {
+            if (webHandler.authenticate(steamClient, nonce)) {
+                Log.i(TAG, "Authenticated!");
+                return true;
+            }
+
+            if (i + 1 < 3) {
+                Log.i(TAG, "Retrying...");
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                    return false;
+                }
             }
         }
+        return false;
+    }
+
+    private void registerApiKey() {
+        Log.i(TAG, "Registering API key");
+        final int result = webHandler.updateApiKey();
+        Log.i(TAG, "API key result: " + result);
+        switch (result) {
+            case SteamWebHandler.ApiKeyState.REGISTERED:
+                break;
+            case SteamWebHandler.ApiKeyState.ACCESS_DENIED:
+                showToast(getString(R.string.apikey_access_denied));
+                break;
+            case SteamWebHandler.ApiKeyState.UNREGISTERED:
+                // Call updateApiKey once more to actually update it
+                webHandler.updateApiKey();
+                break;
+            case SteamWebHandler.ApiKeyState.ERROR:
+                showToast(getString(R.string.apikey_register_failed));
+                break;
+        }
+    }
+
+    private void showToast(final String message) {
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show();
+            }
+        });
     }
 
     private void update() {
@@ -832,29 +948,40 @@ public class SteamService extends Service {
         msg.handle(ConnectedCallback.class, new ActionT<ConnectedCallback>() {
             @Override
             public void call(ConnectedCallback callback) {
-                Log.i(TAG, "Connected()");
                 stopTimeout();
+                Log.i(TAG, "Connected()");
                 connected = true;
-                attemptRestoreLogin();
+                if (logOnDetails != null) {
+                    doLogin();
+                } else {
+                    attemptRestoreLogin();
+                }
             }
         });
         msg.handle(DisconnectedCallback.class, new ActionT<DisconnectedCallback>() {
             @Override
             public void call(DisconnectedCallback callback) {
-                Log.i(TAG, "Disconnected()");
                 stopTimeout();
+                Log.i(TAG, "Disconnected()");
                 connected = false;
                 loggedIn = false;
-                // Try to reconnect after a 3 second delay
-                scheduler.schedule(new Runnable() {
-                    @Override
-                    public void run() {
-                        // Disconnect in 15 seconds if connection hangs....
-                        startTimeout();
-                        Log.i(TAG, "Reconnecting");
-                        steamClient.connect();
-                    }
-                }, 3, TimeUnit.SECONDS);
+
+                if (!loginInProgress) {
+                    // Try to reconnect after a 5 second delay
+                    scheduler.schedule(new Runnable() {
+                        @Override
+                        public void run() {
+                            startTimeout();
+                            Log.i(TAG, "Reconnecting");
+                            steamClient.connect();
+                        }
+                    }, 5, TimeUnit.SECONDS);
+                } else {
+                    // SteamKit may disconnect us while logging on (if already connected),
+                    // but since it reconnects immediately after we do not have to reconnect here.
+                    Log.i(TAG, "NOT reconnecting (logon in progress)");
+                }
+
                 // Tell the activity that we've been disconnected from Steam
                 LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(DISCONNECT_EVENT));
             }
@@ -862,8 +989,8 @@ public class SteamService extends Service {
         msg.handle(LoggedOffCallback.class, new ActionT<LoggedOffCallback>() {
             @Override
             public void call(LoggedOffCallback callback) {
-                Log.i(TAG, "Logoff result " + callback.getResult().toString());
                 stopTimeout();
+                Log.i(TAG, "Logoff result " + callback.getResult().toString());
                 if (callback.getResult() == EResult.LoggedInElsewhere) {
                     updateNotification(getString(R.string.logged_in_elsewhere));
                     unscheduleFarmTask();
@@ -883,6 +1010,8 @@ public class SteamService extends Service {
                 final EResult result = callback.getResult();
                 Log.i(TAG, result.toString());
 
+                loginInProgress = false;
+
                 final String webApiUserNonce = callback.getWebAPIUserNonce();
 
                 if (result == EResult.OK) {
@@ -897,38 +1026,22 @@ public class SteamService extends Service {
                     executor.execute(new Runnable() {
                         @Override
                         public void run() {
-                            boolean gotAuth = false;
-                            for (int i=0;i<3;i++) {
-                                gotAuth = webHandler.authenticate(steamClient, webApiUserNonce);
-                                Log.i(TAG, "Got auth? "  + gotAuth);
-                                if (gotAuth) {
-                                    break;
-                                }
-                                Log.i(TAG, "retrying...");
-                                try {
-                                    Thread.sleep(500);
-                                } catch (InterruptedException e) {
-                                    e.printStackTrace();
-                                }
-                            }
+                            final boolean gotAuth = attemptAuthentication(webApiUserNonce);
 
                             if (gotAuth) {
                                 resumeFarming();
+                                registerApiKey();
                             } else {
-                                updateNotification(getString(R.string.web_login_failed));
+                                // Request a new WebAPI user authentication nonce
+                                steamUser.requestWebAPIUserNonce();
                             }
                         }
                     });
-                } else {
-                    if (result == EResult.InvalidPassword && !Prefs.getLoginKey().isEmpty()) {
-                        // Probably no longer valid
-                        Log.i(TAG, "Login key expired");
-                        Prefs.writeLoginKey("");
-                        updateNotification(getString(R.string.login_key_expired));
-                    }
-
-                    // Reconnect
-                    steamClient.disconnect();
+                } else if (result == EResult.InvalidPassword && !PrefsManager.getLoginKey().isEmpty()) {
+                    // Probably no longer valid
+                    Log.i(TAG, "Login key expired");
+                    PrefsManager.writeLoginKey("");
+                    updateNotification(getString(R.string.login_key_expired));
                 }
 
                 // Tell LoginActivity the result
@@ -941,7 +1054,7 @@ public class SteamService extends Service {
             @Override
             public void call(LoginKeyCallback callback) {
                 Log.i(TAG, "Saving loginkey");
-                Prefs.writeLoginKey(callback.getLoginKey());
+                PrefsManager.writeLoginKey(callback.getLoginKey());
             }
         });
         msg.handle(JobCallback.class, new ActionT<JobCallback>() {
@@ -969,7 +1082,7 @@ public class SteamService extends Service {
                     steamUser.sendMachineAuthResponse(auth);
 
                     final String sentryHash = Utils.bytesToHex(sha1);
-                    Prefs.writeSentryHash(sentryHash);
+                    PrefsManager.writeSentryHash(sentryHash);
                 }
             }
         });
@@ -979,7 +1092,7 @@ public class SteamService extends Service {
                 final String[] servers = callback.getServerList();
                 if (servers.length > 0) {
                     Log.i(TAG, "Saving CM servers");
-                    Prefs.writeCmServers(Utils.arrayToString(servers));
+                    PrefsManager.writeCmServers(Utils.arrayToString(servers));
                 }
             }
         });
@@ -1014,30 +1127,19 @@ public class SteamService extends Service {
                                 products.append(", ");
                             }
                         }
-                        new Handler(Looper.getMainLooper()).post(new Runnable() {
-                            @Override
-                            public void run() {
-                                Toast.makeText(getApplicationContext(), getString(R.string.activated, products.toString()), Toast.LENGTH_LONG).show();
-                            }
-                        });
+                        showToast(getString(R.string.activated, products.toString()));
                     }
                 } else {
                     final int purchaseResult = callback.getPurchaseResultDetails();
-
-                    new Handler(Looper.getMainLooper()).post(new Runnable() {
-                        @Override
-                        public void run() {
-                            String error;
-                            if (purchaseResult == 9) {
-                                error = getString(R.string.product_already_owned);
-                            } else if (purchaseResult == 14) {
-                                error = getString(R.string.invalid_key);
-                            } else {
-                                error = getString(R.string.activation_failed);
-                            }
-                            Toast.makeText(getApplicationContext(), error, Toast.LENGTH_LONG).show();
-                        }
-                    });
+                    final int errorId;
+                    if (purchaseResult == 9) {
+                        errorId = R.string.product_already_owned;
+                    } else if (purchaseResult == 14) {
+                        errorId = R.string.invalid_key;
+                    } else {
+                        errorId = R.string.activation_failed;
+                    }
+                    showToast(getString(errorId));
                 }
             }
         });
@@ -1045,8 +1147,8 @@ public class SteamService extends Service {
             @Override
             public void call(PersonaStateCallback callback) {
                 if (steamClient.getSteamId().equals(callback.getFriendID())) {
-                    personaName = callback.getName();
-                    avatarHash = Utils.bytesToHex(callback.getAvatarHash()).toLowerCase();
+                    final String personaName = callback.getName();
+                    final String avatarHash = Utils.bytesToHex(callback.getAvatarHash()).toLowerCase();
                     Log.i(TAG, "Avatar hash" + avatarHash);
                     final Intent event = new Intent(PERSONA_EVENT);
                     event.putExtra(PERSONA_NAME, personaName);
@@ -1064,12 +1166,7 @@ public class SteamService extends Service {
 
                 if (grantedApps.length > 0 || grantedPackages.length > 0) {
                     // Granted
-                    new Handler(Looper.getMainLooper()).post(new Runnable() {
-                        @Override
-                        public void run() {
-                            Toast.makeText(SteamService.this, getString(R.string.activated, String.valueOf(gameId)), Toast.LENGTH_LONG).show();
-                        }
-                    });
+                    showToast(getString(R.string.activated, String.valueOf(gameId)));
                 } else {
                     // Try activating it with the web handler
                     executor.execute(new Runnable() {
@@ -1081,12 +1178,7 @@ public class SteamService extends Service {
                             } else {
                                 msg = getString(R.string.activation_failed);
                             }
-                            new Handler(Looper.getMainLooper()).post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    Toast.makeText(SteamService.this, msg, Toast.LENGTH_LONG).show();
-                                }
-                            });
+                            showToast(msg);
                         }
                     });
                 }
@@ -1095,7 +1187,7 @@ public class SteamService extends Service {
         msg.handle(AccountInfoCallback.class, new ActionT<AccountInfoCallback>() {
             @Override
             public void call(AccountInfoCallback callback) {
-                if (Prefs.getOffline()) {
+                if (PrefsManager.getOffline()) {
                     return;
                 }
 
@@ -1118,6 +1210,24 @@ public class SteamService extends Service {
                 steamFriends.setPersonaState(EPersonaState.Online);
             }
         });
+        msg.handle(WebAPIUserNonceCallback.class, new ActionT<WebAPIUserNonceCallback>() {
+            @Override
+            public void call(final WebAPIUserNonceCallback callback) {
+                Log.i(TAG, "Got new WebAPI user authentication nonce");
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        final boolean gotAuth = attemptAuthentication(callback.getNonce());
+
+                        if (gotAuth) {
+                            resumeFarming();
+                        } else {
+                            updateNotification(getString(R.string.web_login_failed));
+                        }
+                    }
+                });
+            }
+        });
     }
 
     /**
@@ -1126,6 +1236,8 @@ public class SteamService extends Service {
      */
     private void playGame(int appId) {
         steamUser.setPlayingGame(appId);
+        // Tell the activity
+        LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(NOW_PLAYING_EVENT));
     }
 
     /**
@@ -1149,6 +1261,8 @@ public class SteamService extends Service {
         playGame = new ClientMsgProtobuf<SteammessagesClientserver.CMsgClientGamesPlayed>(SteammessagesClientserver.CMsgClientGamesPlayed.class, EMsg.ClientGamesPlayed);
         playGame.getBody().gamesPlayed = gamesPlayed;
         steamClient.send(playGame);
+        // Tell the activity
+        LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(NOW_PLAYING_EVENT));
     }
 
     private void stopPlaying() {
@@ -1156,12 +1270,14 @@ public class SteamService extends Service {
             currentGames.clear();
         }
         steamUser.setPlayingGame(0);
+        // Tell the activity
+        LocalBroadcastManager.getInstance(SteamService.this).sendBroadcast(new Intent(NOW_PLAYING_EVENT));
     }
 
     private void writeSentryFile(byte[] data) {
         final File sentryFolder = new File(getFilesDir(), "sentry");
         if (sentryFolder.exists() || sentryFolder.mkdir()) {
-            final File sentryFile = new File(sentryFolder, Prefs.getUsername() + ".sentry");
+            final File sentryFile = new File(sentryFolder, PrefsManager.getUsername() + ".sentry");
             FileOutputStream fos = null;
             try {
                 Log.i(TAG, "Writing sentry file to " + sentryFile.getAbsolutePath());
@@ -1183,7 +1299,7 @@ public class SteamService extends Service {
 
     private byte[] readSentryFile() {
         final File sentryFolder = new File(getFilesDir(), "sentry");
-        final File sentryFile = new File(sentryFolder, Prefs.getUsername() + ".sentry");
+        final File sentryFile = new File(sentryFolder, PrefsManager.getUsername() + ".sentry");
         if (sentryFile.exists()) {
             Log.i(TAG, "Reading sentry file " + sentryFile.getAbsolutePath());
             FileInputStream fis = null;
